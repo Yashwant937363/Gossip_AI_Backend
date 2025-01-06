@@ -9,6 +9,16 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
+from transformers import BlipProcessor, BlipForConditionalGeneration
+import requests
+from io import BytesIO
+from PIL import Image
+
+
+# Load BLIP model
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+blipmodel = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+
 
 load_dotenv()
 
@@ -69,6 +79,28 @@ async def chatbot_route(request: ChatRequest):
     )
 
     return {"response": response}
+
+class ImageRequest(BaseModel):
+    url:str
+
+@app.post("/api/ai/analyze-image")
+async def analyze_image(request:ImageRequest):
+    try:
+        url = request.url
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an error for bad responses (e.g., 404)
+        image = Image.open(BytesIO(response.content))
+
+        # Process the image with BLIP
+        inputs = processor(image,return_tensors="pt")
+        outputs = blipmodel.generate(**inputs)
+        caption = processor.decode(outputs[0], skip_special_tokens=True)
+        
+        return {"caption": caption}
+
+    except Exception as e:
+        print(str(e))
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="localhost", port=8000)

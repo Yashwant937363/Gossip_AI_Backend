@@ -5,3 +5,8 @@ fastapi
 uvicorn
 python-dotenv
 pydantic
+transformers
+pillow
+torch
+torchvision
+torchaudio
