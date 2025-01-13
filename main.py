@@ -13,6 +13,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 import requests
 from io import BytesIO
 from PIL import Image
+import os
 
 
 # Load BLIP model
@@ -103,4 +104,6 @@ async def analyze_image(request:ImageRequest):
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="localhost", port=8000)
+    host = os.getenv("HOST", "localhost")
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host=host, port=port)
