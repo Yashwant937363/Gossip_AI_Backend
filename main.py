@@ -16,11 +16,8 @@ from PIL import Image
 from groq import Groq
 import json
 import os
-
-
-# Load BLIP model
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-blipmodel = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+import google.generativeai as genai
+from io import BytesIO
 
 
 load_dotenv()
@@ -87,23 +84,46 @@ class ImageRequest(BaseModel):
     url:str
 
 @app.post("/api/ai/analyze-image")
-async def analyze_image(request:ImageRequest):
+async def analyze_image( request:ImageRequest):
     try:
+        # Get URL from the request object
         url = request.url
+        GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+        genai.configure(api_key=GOOGLE_API_KEY)
+        
+        # Initialize the Gemini API model
+        image_processing_model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # Define the SYSTEM_PROMPT for the image analysis
+        SYSTEM_PROMPT = """
+            You are an advanced AI-powered image recognition system designed to analyze images and provide detailed insights. Your task is to identify objects, classify them accurately, and provide meaningful information related to the detected items. Your response should be structured and informative, including the following details when applicable:
+            
+            Object Identification: Clearly specify what is in the image. Mention the primary object(s) and their attributes (e.g., color, texture, size).
+            Classification & Specific Details: If the object belongs to a known category (e.g., animal, currency, vehicle, historical artifact), provide additional details such as species, breed, denomination, or origin.
+            Contextual Information: Explain where and how the identified object is typically used, its purpose, and any historical or cultural significance.
+            Additional Insights: If relevant, provide interesting facts, scientific details, or comparisons to similar objects.
+            Confidence & Uncertainty: If unsure about a classification, mention possible alternatives while keeping the response concise and user-friendly.
+        """
+
+        # Fetch the image from the provided URL
         response = requests.get(url)
-        response.raise_for_status()  # Raise an error for bad responses (e.g., 404)
+        if response.status_code != 200:
+            return {"error": "Failed to fetch image."}
+
+        # Open the image using PIL from the content fetched in memory
         image = Image.open(BytesIO(response.content))
 
-        # Process the image with BLIP
-        inputs = processor(image,return_tensors="pt")
-        outputs = blipmodel.generate(**inputs)
-        caption = processor.decode(outputs[0], skip_special_tokens=True)
+        # Generate response from Gemini model
+        result = image_processing_model.generate_content([SYSTEM_PROMPT, image])  # Pass image as PIL.Image.Image
         
-        return {"caption": caption}
+        # Return the response with the caption
+        return {"caption": result.text.replace("*", "").replace("\n", "<br />")}
 
     except Exception as e:
-        print(str(e))
+        # In case of any error, return the error message
+        print(f"Error: {str(e)}")
         return {"error": str(e)}
+
     
 class Message(BaseModel):
     id: str  
