@@ -9,7 +9,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-from transformers import BlipProcessor, BlipForConditionalGeneration
 import requests
 from io import BytesIO
 from PIL import Image
@@ -18,12 +17,15 @@ import json
 import os
 import google.generativeai as genai
 from io import BytesIO
-
+from typing import List, Literal
 
 load_dotenv()
 
 # Store for message based chat history
 store = {}
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=GROQ_API_KEY)
 
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
@@ -125,18 +127,16 @@ async def analyze_image( request:ImageRequest):
         return {"error": str(e)}
 
     
-class Message(BaseModel):
+class Message1(BaseModel):
     id: str  
     text: str
 
 class MultiTranslationRequest(BaseModel):
-    messages: list[Message]
+    messages: list[Message1]
     to: str
 
 @app.post("/api/ai/translate/multiple-messages")
 async def translate_multiple_messages(request:MultiTranslationRequest):
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    client = Groq(api_key=GROQ_API_KEY)
     completion = client.chat.completions.create(
         model="deepseek-r1-distill-llama-70b",
         messages=[
@@ -165,8 +165,6 @@ class SingleTranslationRequest(BaseModel):
 
 @app.post("/api/ai/translate/single-message")
 async def translate_single_message(request:SingleTranslationRequest):
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    client = Groq(api_key=GROQ_API_KEY)
     completion = client.chat.completions.create(
         model="deepseek-r1-distill-llama-70b",
         messages=[
@@ -187,6 +185,62 @@ async def translate_single_message(request:SingleTranslationRequest):
     )
     parsed_json = json.loads(completion.choices[0].message.content)
     return parsed_json
+
+class Message2(BaseModel):
+    username:str
+    message:str
+
+class SummarizeChatRequest(BaseModel):
+    conversation:list[Message2]
+    method:Literal["paragraph", "bullet", "structured"]
+
+@app.post("/api/ai/summarize")
+async def summerize_chat(request:SummarizeChatRequest):
+    input_system_prompt = "You are an AI assistant designed to summarize structured conversations provided in JSON format. Your goal is to extract key details and generate a concise summary. Focus on capturing important topics, decisions made, and key exchanges while removing unnecessary small talk. Identify the main themes of the conversation and present the summary in the requested format. Maintain clarity and coherence, ensuring that the summarized content is easy to understand and accurately reflects the conversation.\n**Input Format:**\n\n- The conversation is provided as a JSON object under the `\"conversation\"` key.\n- Each message contains a `\"username\"` (who sent it) and a `\"message\"` (the text content).\n\n**Processing Guidelines:**\n\n1. **Identify Key Topics:** Determine the main subject(s) discussed.\n2. **Extract Key Points:** Capture relevant details, such as questions, suggestions, and decisions.\n3. **Summarize Concisely:** Remove greetings, fillers, and unnecessary exchanges while maintaining context.\n\nExample Input:\n{\n\"conversation\": [\n{\n\"username\": \"Person A\",\n\"message\": \"Hey, I’m thinking of buying a new laptop. Any recommendations?\"\n},\n{\n\"username\": \"Person B\",\n\"message\": \"What’s your budget and main use?\"\n},\n{\n\"username\": \"Person A\",\n\"message\": \"Around $1000. I’ll use it for programming and occasional gaming.\"\n},\n{\n\"username\": \"Person B\",\n\"message\": \"You should check out the Dell XPS 13 or the ASUS ROG Zephyrus G14.\"\n},\n{\n\"username\": \"Person A\",\n\"message\": \"That sounds good! I’ll research both models. Thanks!\"\n},\n{\n\"username\": \"Person B\",\n\"message\": \"No problem! Let me know if you need more help.\"\n}\n]\n}"
+    output_bullet_points = "Summarize the conversation in bullet points. Focus on key topics discussed, important details, and decisions made. Ensure that each bullet point is clear and concise. Do not include small talk or unnecessary details. Use simple and informative statements.\nExample Structure of JSON:\n{\n\"summery\": [\n\"Concise key points summarizing the conversation.\",\n\"Each point should capture an essential detail or decision made.\"\n],\n}\nExample:\n{\n\"summary\": [\n\"Person A is looking for a new laptop.\",\n\"Budget: $1000, use: programming & gaming.\",\n\"Person B suggests Dell XPS 13 and ASUS ROG Zephyrus G14.\",\n\"Person A will research the suggested options before making a decision.\",\n\"Person B offers further assistance if needed.\"\n]\n}"
+    output_paragraph =  "Summarize the conversation in a short, well-structured paragraph. Focus on the main topic, key\ndetails, and final decisions. Maintain readability and coherence, ensuring the summary is\ninformative while remaining concise. Avoid unnecessary small talk.\nExample Structure JSON:\n{\n”summery”:”Person A is looking for a new laptop with a $1000 budget, primarily for programming and occasional gaming. Person B suggests two models: Dell XPS 13 and ASUS ROG Zephyrus G14. Person A decides to research both options before making a purchase. Person B offers further assistance if needed.”\n}\nExample:\n{\n\"summary\": \"Person A is looking for a new laptop with a $1000 budget, primarily for programming and occasional gaming. Person B suggests two models: Dell XPS 13 and ASUS ROG Zephyrus G14. Person A decides to research both options before making a purchase. Person B offers further assistance if needed.\"\n}"
+    output_structured = "Summarize the conversation in a structured format, including a topic, key points, and a conclusion. The topic should reflect the main subject of the conversation. The key points should capture the essential details, and the conclusion should summarize the final decision or outcome. Keep the summary precise and informative.\nExample Structure JSON:\n{\n”summery”:\n{\n\"topic\": \"Main subject of the conversation.\",\n\"keyPoints\": [\n\"Essential details extracted from the conversation.\",\n\"Key decisions or exchanges.\"\n],\n\"conclusion\": \"Final outcome or decision reached in the conversation.\"\n}\n}\nExample\n{\n\"summary\": {\n\"topic\": \"Laptop Recommendation\",\n\"keyPoints\": [\n\"Person A needs a laptop for programming & gaming (Budget: $1000).\",\n\"Person B suggests Dell XPS 13 and ASUS ROG Zephyrus G14.\",\n\"Person A decides to research before purchasing.\"\n],\n\"conclusion\": \"Person A will explore both laptop options before making a decision, with Person B available for further guidance.\"\n}\n}"
+
+    output_system_prompt = ""
+    if(request.method == "bullet"):
+        output_system_prompt = output_bullet_points
+    elif(request.method == 'paragraph'):
+        output_system_prompt = output_paragraph
+    elif(request.method == 'structured'):
+        output_system_prompt = output_structured
+    
+
+    # Ensure input is a valid JSON-formatted string
+    input = {
+        "conversation": [msg.dict() for msg in request.conversation]
+    }
+    input_str = json.dumps(input)  # ✅ Convert to string
+
+    completion = client.chat.completions.create(
+        model="deepseek-r1-distill-llama-70b",
+        messages=[
+            {
+                "role": "system",
+                "content": f"{input_system_prompt}\n\n{output_system_prompt}"
+            },
+            {
+                "role": "user",
+                "content": input_str  # ✅ Pass stringified content
+            }
+        ],
+        temperature=0.2,
+        top_p=0.95,
+        stream=False,
+        response_format={"type": "json_object"},
+        stop=None
+    )
+
+
+    parsed_json = json.loads(completion.choices[0].message.content)
+    return parsed_json
+    
+
+
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "localhost")
