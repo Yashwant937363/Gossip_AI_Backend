@@ -38,7 +38,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
 
 
 # Define the model
-model = ChatGroq(model="llama3-8b-8192", max_tokens=50)
+model = ChatGroq(model="openai/gpt-oss-20b", max_tokens=256)
 with_message_history = RunnableWithMessageHistory(model, get_session_history)
 
 
@@ -82,7 +82,7 @@ async def chatbot_route(request: ChatRequest):
         [human_behavior_message, system_message, human_message], config={
             "configurable": {"session_id": session_id}}
     )
-
+    print(response)
     return {"response": response}
 
 class ImageRequest(BaseModel):
