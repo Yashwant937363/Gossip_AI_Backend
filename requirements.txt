@@ -7,4 +7,4 @@ python-dotenv
 pydantic
 pillow
 requests
-google-generativeai
+google-genai

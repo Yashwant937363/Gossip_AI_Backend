@@ -1,3 +1,5 @@
+import base64
+
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.chat_history import (
@@ -7,7 +9,7 @@ from langchain_core.chat_history import (
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.messages import HumanMessage, SystemMessage
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
 from io import BytesIO
@@ -15,7 +17,8 @@ from PIL import Image
 from groq import Groq
 import json
 import os
-import google.generativeai as genai
+from google import genai # type: ignore
+from google.genai import types # type: ignore
 from io import BytesIO
 from typing import List, Literal
 
@@ -86,46 +89,103 @@ class ImageRequest(BaseModel):
     url:str
 
 @app.post("/api/ai/analyze-image")
-async def analyze_image( request:ImageRequest):
+async def analyze_image(request: ImageRequest):
     try:
-        # Get URL from the request object
-        url = request.url
-        GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-        genai.configure(api_key=GOOGLE_API_KEY)
-        
-        # Initialize the Gemini API model
-        image_processing_model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Define the SYSTEM_PROMPT for the image analysis
+        response = requests.get(request.url)
+        response.raise_for_status()
+
+        image_bytes = response.content
+
+        # Convert image bytes to base64
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Get MIME type from response
+        content_type = response.headers.get("content-type", "image/jpeg")
+
+        image_data_url = (
+            f"data:{content_type};base64,{image_base64}"
+        )
+
         SYSTEM_PROMPT = """
-            You are an advanced AI-powered image recognition system designed to analyze images and provide detailed insights. Your task is to identify objects, classify them accurately, and provide meaningful information related to the detected items. Your response should be structured and informative, including the following details when applicable:
-            
-            Object Identification: Clearly specify what is in the image. Mention the primary object(s) and their attributes (e.g., color, texture, size).
-            Classification & Specific Details: If the object belongs to a known category (e.g., animal, currency, vehicle, historical artifact), provide additional details such as species, breed, denomination, or origin.
-            Contextual Information: Explain where and how the identified object is typically used, its purpose, and any historical or cultural significance.
-            Additional Insights: If relevant, provide interesting facts, scientific details, or comparisons to similar objects.
-            Confidence & Uncertainty: If unsure about a classification, mention possible alternatives while keeping the response concise and user-friendly.
+        You are an AI image analysis system.
+
+        Analyze the provided image and return ONLY valid JSON.
+
+        Use exactly this structure:
+
+        {
+        "title": "short name of the main subject",
+        "description": "detailed description of what is visible in the image",
+        "details": [
+            "important visual detail",
+            "important visual detail",
+            "important visual detail"
+        ],
+        "mood": "short description of the mood or feeling conveyed by the image"
+        }
+
+        Rules:
+        - Return ONLY JSON.
+        - Do not use Markdown.
+        - Do not use ```json.
+        - Do not add any text before or after the JSON.
+        - Only describe information that can reasonably be determined from the image.
+        - Keep the description detailed but concise.
+        - Add as many useful details as necessary to the details array.
+        - If mood is not applicable, use an empty string.
         """
 
-        # Fetch the image from the provided URL
-        response = requests.get(url)
-        if response.status_code != 200:
-            return {"error": "Failed to fetch image."}
 
-        # Open the image using PIL from the content fetched in memory
-        image = Image.open(BytesIO(response.content))
+        result = client.chat.completions.create(
+            model="qwen/qwen3.6-27b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this image and return the result using the required JSON structure.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_data_url,
+                            },
+                        },
+                    ],
+                },
+            ],
+            temperature=0.2,
+            reasoning_effort="default",
+            stream=False,
+            response_format={"type": "json_object"},
+        )
+        content = result.choices[0].message.content
 
-        # Generate response from Gemini model
-        result = image_processing_model.generate_content([SYSTEM_PROMPT, image])  # Pass image as PIL.Image.Image
-        
-        # Return the response with the caption
-        return {"caption": result.text.replace("*", "").replace("\n", "<br />")}
+        if content == None:
+            raise ValueError("Value can't be none")
+            
+
+        content = result.choices[0].message.content
+
+        if(content == None):
+            raise ValueError("Value should not be None")
+
+        analysis = json.loads(content)
+
+        return {
+            "data": analysis
+        }
 
     except Exception as e:
-        # In case of any error, return the error message
-        print(f"Error: {str(e)}")
-        return {"error": str(e)}
-
+        print(e)
+        return {
+            "error": str(e)
+        }
     
 class Message1(BaseModel):
     id: str  
@@ -138,7 +198,7 @@ class MultiTranslationRequest(BaseModel):
 @app.post("/api/ai/translate/multiple-messages")
 async def translate_multiple_messages(request:MultiTranslationRequest):
     completion = client.chat.completions.create(
-        model="deepseek-r1-distill-llama-70b",
+        model="openai/gpt-oss-120b",
         messages=[
             {
                 "role": "system",
@@ -155,9 +215,20 @@ async def translate_multiple_messages(request:MultiTranslationRequest):
         response_format={"type": "json_object"},
         stop=None,
     )
-    parsed_json = json.loads(completion.choices[0].message.content)
-    return parsed_json
+    message = completion.choices[0].message.content
 
+    if message is None:
+        raise HTTPException(status_code=500, detail="No response from model")
+
+    try:
+        parsed_json = json.loads(message)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model returned invalid JSON: {message}"
+        )
+
+    return parsed_json
 class SingleTranslationRequest(BaseModel):
     text:str
     to:str
@@ -166,7 +237,7 @@ class SingleTranslationRequest(BaseModel):
 @app.post("/api/ai/translate/single-message")
 async def translate_single_message(request:SingleTranslationRequest):
     completion = client.chat.completions.create(
-        model="deepseek-r1-distill-llama-70b",
+        model="openai/gpt-oss-120b",
         messages=[
             {
                 "role": "system",
@@ -183,12 +254,24 @@ async def translate_single_message(request:SingleTranslationRequest):
         response_format={"type": "json_object"},
         stop=None,
     )
-    parsed_json = json.loads(completion.choices[0].message.content)
-    return parsed_json
+    message = completion.choices[0].message.content
 
+    if message is None:
+        raise HTTPException(status_code=500, detail="No response from model")
+
+    try:
+        parsed_json = json.loads(message)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model returned invalid JSON: {message}"
+        )
+
+    return parsed_json
 class Message2(BaseModel):
     username:str
     message:str
+
 
 class SummarizeChatRequest(BaseModel):
     conversation:list[Message2]
@@ -217,7 +300,7 @@ async def summerize_chat(request:SummarizeChatRequest):
     input_str = json.dumps(input)  # ✅ Convert to string
 
     completion = client.chat.completions.create(
-        model="deepseek-r1-distill-llama-70b",
+        model="openai/gpt-oss-120b",
         messages=[
             {
                 "role": "system",
@@ -235,8 +318,19 @@ async def summerize_chat(request:SummarizeChatRequest):
         stop=None
     )
 
+    message = completion.choices[0].message.content
 
-    parsed_json = json.loads(completion.choices[0].message.content)
+    if message is None:
+        raise HTTPException(status_code=500, detail="No response from model")
+
+    try:
+        parsed_json = json.loads(message)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model returned invalid JSON: {message}"
+        )
+
     return parsed_json
     
 
@@ -245,5 +339,5 @@ async def summerize_chat(request:SummarizeChatRequest):
 if __name__ == "__main__":
     host = os.getenv("HOST", "localhost")
     port = int(os.getenv("PORT", 8000))
-    print("Host:" +host, "Port: "+port)
+    print("Host:" +host, "Port: ",port)
     uvicorn.run(app, host=host, port=port)

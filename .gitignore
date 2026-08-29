@@ -1,2 +1,6 @@
 /gossip/
 .env
+
+
+/__pycache__
+/.venv
